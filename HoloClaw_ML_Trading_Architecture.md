@@ -12,8 +12,8 @@
 A scalable, production-grade system for multiple algorithmic/ML strategies running on HoloClaw with **OpenClaw Agent orchestration**, **YAML-configured strategies**, **agentic trading capability**, and **production hardening**.
 
 ### Core Capabilities (v5)
-- **YAML-Configured Strategies** — No-code strategy configuration via YAML files, OpenClaw-driven generation from SQX
-- **OpenClaw Generation Workflow** — AI-assisted strategy import/export between SQX and YAML format
+- **YAML-Configured Strategies** — No-code strategy configuration via YAML files, OpenClaw-driven generation
+- **OpenClaw Generation Workflow** — Bi-directional conversion: SQX ↔ YAML ↔ TradeStation
 - **Enhanced Safety Rails** — Multi-layer circuit breakers, drawdown controls, order reconciliation
 - **ML-Enhanced Agentic Trader** — Classifier confidence, pattern recognition, anomaly detection
 - **Production Hardening** — Structured JSON logging, Prometheus metrics, Discord/Telegram alerting, config versioning
@@ -178,10 +178,10 @@ parameters:
 
 ## OpenClaw Generation Workflow
 
-### SQX → YAML Export Flow
+### SQX → YAML → Tradestation Export Flow
 
 ```
-SQX Strategy File
+SQX Strategy File (.el)
         ↓
 OpenClaw Agent (SQX_Exporter)
         ↓
@@ -191,30 +191,44 @@ YAML Strategy Template
         ↓
 Human Review + Manual Adjustments
         ↓
-YAML Strategy File (production-ready)
-        ↓
-Imported to MLAT System
-```
-
-### YAML → SQX Import Flow
-
-```
 YAML Strategy File
         ↓
-OpenClaw Agent (SQX_Importer)
+OpenClaw Agent (YAML → Tradestation)
         ↓
-Validate YAML Schema
+Tradestation EasyLanguage (.el)
         ↓
-Generate SQX EL Code
+Tradestation Backtesting
         ↓
-SQX Import
-        ↓
-Backtest Results
-        ↓
-YAML Update (with optimized parameters)
+YAML Update (with backtest results)
 ```
 
-### OpenClaw Agent Integration Points
+### Tradestation → YAML → SQX Import Flow
+
+```
+Tradestation Strategy File (.el)
+        ↓
+OpenClaw Agent (Tradestation_Importer)
+        ↓
+Parsed Tradestation EL Code
+        ↓
+YAML Strategy Template
+        ↓
+Human Review + Manual Adjustments
+        ↓
+YAML Strategy File
+        ↓
+OpenClaw Agent (YAML → SQX)
+        ↓
+SQX Strategy File (.qxp)
+        ↓
+SQX Backtesting
+        ↓
+YAML Update (with backtest results)
+```
+
+---
+
+## OpenClaw Agent Integration Points
 
 ```python
 # src/agents/sqx_generator.py
@@ -234,11 +248,38 @@ class SQXStrategy:
     risk_params: Dict[str, Any]
 
 class SQXGenerator:
-    """Generate YAML strategies from SQX exports and vice versa"""
+    """Generate YAML strategies from TradeStation exports and vice versa"""
     
     def __init__(self, output_dir: str = "/home/hologaun/projects/mlat/strategies"):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
+    
+    def export_tradestation_to_yaml(self, tradestation_data: str) -> str:
+        """Export TradeStation EL strategy to YAML format"""
+        # Parse Tradestation EL code
+        # Generate YAML template
+        yaml_data = {
+            'strategy': {
+                'name': 'Generated_Strategy',
+                'type': 'custom',
+                'parameters': {}
+            },
+            'entry_conditions': {
+                'long': [],
+                'short': []
+            },
+            'exit_conditions': {
+                'stop_loss': {},
+                'take_profit': {}
+            },
+            'risk_management': {}
+        }
+        
+        yaml_path = os.path.join(self.output_dir, "generated_strategy.yaml")
+        with open(yaml_path, 'w') as f:
+            yaml.dump(yaml_data, f, default_flow_style=False)
+        
+        return yaml_path
     
     def export_sqx_to_yaml(self, sqx_data: SQXStrategy) -> str:
         """Export SQX strategy to YAML format"""
@@ -279,9 +320,155 @@ class SQXGenerator:
             risk_params=yaml_data['risk_management']
         )
     
-    def generate_sqx_from_yaml(self, yaml_path: str) -> str:
+    def generate_tradestation_from_yaml(self, yaml_path: str) -> str:
         """Generate TradeStation EasyLanguage code from YAML"""
         # Implementation would convert YAML to TS EL
+        pass
+    
+    def generate_sqx_from_yaml(self, yaml_path: str) -> str:
+        """Generate SQX strategy file from YAML"""
+        # Implementation would convert YAML to SQX .qxp
+        pass
+```
+YAML Strategy Template
+        ↓
+Human Review + Manual Adjustments
+        ↓
+YAML Strategy File
+        ↓
+OpenClaw Agent (YAML → Tradestation)
+        ↓
+Tradestation EasyLanguage (.el)
+        ↓
+Tradestation Backtesting
+        ↓
+YAML Update (with backtest results)
+```
+
+### Tradestation → YAML → SQX Import Flow
+
+```
+Tradestation Strategy File (.el)
+        ↓
+OpenClaw Agent (Tradestation_Importer)
+        ↓
+Parsed Tradestation EL Code
+        ↓
+YAML Strategy Template
+        ↓
+Human Review + Manual Adjustments
+        ↓
+YAML Strategy File
+        ↓
+OpenClaw Agent (YAML → SQX)
+        ↓
+SQX Strategy File (.qxp)
+        ↓
+SQX Backtesting
+        ↓
+YAML Update (with backtest results)
+````
+
+### OpenClaw Agent Integration Points
+
+```python
+# src/agents/sqx_generator.py
+import yaml
+from typing import Dict, Any
+from dataclasses import dataclass
+import os
+
+@dataclass
+class SQXStrategy:
+    """Represents an SQX strategy for generation"""
+    name: str
+    strategy_type: str  # RSI, MACD, Candlestick, etc.
+    parameters: Dict[str, Any]
+    entry_rules: list
+    exit_rules: list
+    risk_params: Dict[str, Any]
+
+class SQXGenerator:
+    """Generate YAML strategies from TradeStation exports and vice versa"""
+    
+    def __init__(self, output_dir: str = "/home/hologaun/projects/mlat/strategies"):
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+    
+    def export_tradestation_to_yaml(self, tradestation_data: str) -> str:
+        """Export TradeStation EL strategy to YAML format"""
+        # Parse Tradestation EL code
+        # Generate YAML template
+        yaml_data = {
+            'strategy': {
+                'name': 'Generated_Strategy',
+                'type': 'custom',
+                'parameters': {}
+            },
+            'entry_conditions': {
+                'long': [],
+                'short': []
+            },
+            'exit_conditions': {
+                'stop_loss': {},
+                'take_profit': {}
+            },
+            'risk_management': {}
+        }
+        
+        yaml_path = os.path.join(self.output_dir, "generated_strategy.yaml")
+        with open(yaml_path, 'w') as f:
+            yaml.dump(yaml_data, f, default_flow_style=False)
+        
+        return yaml_path
+    
+    def export_sqx_to_yaml(self, sqx_data: SQXStrategy) -> str:
+        """Export SQX strategy to YAML format"""
+        yaml_data = {
+            'strategy': {
+                'name': sqx_data.name,
+                'type': sqx_data.strategy_type,
+                'parameters': sqx_data.parameters
+            },
+            'entry_conditions': {
+                'long': sqx_data.entry_rules.get('long', []),
+                'short': sqx_data.entry_rules.get('short', [])
+            },
+            'exit_conditions': {
+                'stop_loss': sqx_data.exit_rules.get('stop_loss', {}),
+                'take_profit': sqx_data.exit_rules.get('take_profit', {})
+            },
+            'risk_management': sqx_data.risk_params
+        }
+        
+        yaml_path = os.path.join(self.output_dir, f"{sqx_data.name}.yaml")
+        with open(yaml_path, 'w') as f:
+            yaml.dump(yaml_data, f, default_flow_style=False)
+        
+        return yaml_path
+    
+    def import_yaml_to_sqx(self, yaml_path: str) -> SQXStrategy:
+        """Import YAML strategy to SQX format"""
+        with open(yaml_path, 'r') as f:
+            yaml_data = yaml.safe_load(f)
+        
+        return SQXStrategy(
+            name=yaml_data['strategy']['name'],
+            strategy_type=yaml_data['strategy']['type'],
+            parameters=yaml_data['strategy']['parameters'],
+            entry_rules=yaml_data['entry_conditions'],
+            exit_rules=yaml_data['exit_conditions'],
+            risk_params=yaml_data['risk_management']
+        )
+    
+    def generate_tradestation_from_yaml(self, yaml_path: str) -> str:
+        """Generate TradeStation EasyLanguage code from YAML"""
+        # Implementation would convert YAML to TS EL
+        pass
+    
+    def generate_sqx_from_yaml(self, yaml_path: str) -> str:
+        """Generate SQX strategy file from YAML"""
+        # Implementation would convert YAML to SQX .qxp
         pass
 ```
 
@@ -1333,6 +1520,18 @@ class StrategyManager:
         except Exception as e:
             return None
     
+    def export_to_tradestation(self, yaml_path: str) -> str:
+        """Export YAML strategy to TradeStation EasyLanguage"""
+        # Implementation would convert YAML to TS EL
+        # Returns path to generated .el file
+        pass
+    
+    def export_to_sqx(self, yaml_path: str) -> str:
+        """Export YAML strategy to SQX format"""
+        # Implementation would convert YAML to SQX .qxp
+        # Returns path to generated .qxp file
+        pass
+    
     def get_active_strategies(self) -> List[object]:
         """Get all active strategy instances"""
         return [inst for name, inst in self.strategy_instances.items() 
@@ -1715,10 +1914,11 @@ asyncio.run(main())
 │       └── static/
 ├── data/                   # OHLC data cache
 ├── models/                 # Trained ML models
-├── strategies/             # User-added strategies (YAML + Python)
+├── strategies/             # User-added strategies (YAML + Python + TS EL)
 │   ├── strategy_1.yaml     # YAML-based strategy
 │   ├── strategy_2.py       # Python-based strategy
-│   └── strategy_3.yaml     # YAML-based strategy
+│   ├── strategy_3.yaml     # YAML-based strategy
+│   └── strategy_4.el       # TradeStation EasyLanguage strategy
 ├── config/                 # System configuration
 │   └── system_config.json
 ├── memory/                 # Daily reasoning logs (YYYY-MM-DD.md)
@@ -1749,6 +1949,7 @@ uvicorn holoclaw.dashboard.server:app --host 0.0.0.0 --port 8000 --reload
 **Strategy Import:** Strategies can be:
 - **YAML-based** (defined in `/strategies/*.yaml`) — AI-generated or manually configured
 - **Python-based** (module-based, in `src/strategy/`)
+- **Tradestation EL** (`.el` files) — imported from TradeStation
 - **External files** (CSV analysis, AI-generated EL code imported via `strategy/import`)
 - **Toggleable per symbol or globally**
 
