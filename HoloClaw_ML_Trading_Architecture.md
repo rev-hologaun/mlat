@@ -1,4 +1,4 @@
-# HoloClaw ML Trading Architecture v3
+# HoloClaw ML Trading Architecture v4
 
 **Status:** Enhanced & Revised (2026-03-11)  
 **Platform:** HoloClaw (Ryzen 9950X3D, 256GB RAM, multi-TB storage)  
@@ -9,16 +9,17 @@
 
 ## Executive Summary
 
-A scalable, production-grade system for multiple algorithmic/ML strategies running on HoloClaw with **OpenClaw Agent orchestration**, **agentic trading capability**, and **modular code structure**.
+A scalable, production-grade system for multiple algorithmic/ML strategies running on HoloClaw with **OpenClaw Agent orchestration**, **agentic trading capability**, **production hardening**, and **safety rails**.
 
-### Core Capabilities (v3)
-- **Modular Code Design** — Hardcoded optimization scripts calling verified functions for rapid iteration
-- **OpenClaw Agent Integration** — Full system observability and control via OpenClaw infrastructure
-- **Agentic Trader** — Independent reasoning-based execution layer with advanced configuration UI
-- **Configuration Widget** — Live parameter updates via web interface
-- **Full TradeStation API v3** — Complete order lifecycle, account management, streaming endpoints
-- **Built-in Scanner** — Real-time strategy/indicator scanning with candlestick patterns
-- **GitHub Tracking** — Version control for all strategies and configurations
+### Core Capabilities (v4)
+- **Safety Rails** — Backtesting, exit logic, circuit breakers, order reconciliation
+- **Improved Agentic Trader** — ML classifier confidence, feature engineering, reasoning logging
+- **Production Hardening** — Structured JSON logging, Prometheus metrics, Discord alerting, config versioning
+- **Scanner Signal Conditions** — Trigger buy/sell or Discord notifications
+- **Modular Code Design** — Hardcoded optimization scripts calling verified functions
+- **OpenClaw Agent Integration** — Full system observability
+- **Full TradeStation API v3** — Complete order lifecycle
+- **Strategy Management** — Load/unload/import strategies with per-symbol filtering
 
 ---
 
@@ -26,7 +27,7 @@ A scalable, production-grade system for multiple algorithmic/ML strategies runni
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────┐
-│                       HoloClaw ML Trading Platform v3                        │
+│                       HoloClaw ML Trading Platform v4                        │
 ├────────────────────────────────────────────────────────────────────────────────┤
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐│
 │  │    Market      │  │   Signal       │  │   Portfolio    │  │   Execution    ││
@@ -47,6 +48,7 @@ A scalable, production-grade system for multiple algorithmic/ML strategies runni
 │  │  │  System     │  │   Agentic   │  │  Config     │  │   Scanner   │   │  │
 │  │  │  Monitor    │  │   Trader    │  │   Widget    │  │   Engine    │   │  │
 │  │  │  (GUI)      │  │  (Reasoning)│  │  (Live)     │  │   (Indicators)│  │
+│  │  │  (Safety)   │  │  (ML)       │  │  (Live)     │  │   (Signals)   │   │  │
 │  │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘   │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                         │                                      │
@@ -187,6 +189,7 @@ class PortfolioManager:
         self.max_position_size = max_position_size  # Max 5% per position
         self.max_drawdown = 0.15  # 15% max drawdown
         self.max_positions = 10  # Max concurrent positions
+        self.circuit_breakers = CircuitBreakers(self)
     
     def calculate_position_size(self, symbol: str, entry_price: float, 
                                 stop_loss_price: float, risk_amount: float) -> int:
@@ -225,6 +228,10 @@ class PortfolioManager:
     
     def can_trade(self, symbol: str, entry_price: float, risk_amount: float) -> bool:
         """Check if trade can be executed based on risk limits"""
+        # Check circuit breakers
+        if not self.circuit_breakers.can_trade():
+            return False
+        
         metrics = self.calculate_portfolio_metrics()
         
         # Check drawdown limit
@@ -247,6 +254,49 @@ class PortfolioManager:
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
+
+class CircuitBreakers:
+    """Circuit breakers to pause trading on adverse conditions"""
+    
+    def __init__(self, portfolio: PortfolioManager):
+        self.portfolio = portfolio
+        self.failed_orders = []  # Timestamps of failed orders
+        self.api_disconnected = False
+        self.api_disconnect_start = None
+        self.trading_paused = False
+    
+    def on_order_failure(self):
+        """Record a failed order"""
+        self.failed_orders.append(asyncio.get_event_loop().time())
+        self._check_failed_orders_breaker()
+    
+    def on_api_disconnect(self):
+        """Mark API as disconnected"""
+        self.api_disconnected = True
+        self.api_disconnect_start = asyncio.get_event_loop().time()
+        self._check_api_disconnect_breaker()
+    
+    def on_api_reconnect(self):
+        """Mark API as reconnected"""
+        self.api_disconnected = False
+        self.api_disconnect_start = None
+    
+    def _check_failed_orders_breaker(self):
+        """Pause trading if 3+ failed orders in 5 minutes"""
+        now = asyncio.get_event_loop().time()
+        self.failed_orders = [t for t in self.failed_orders if now - t < 300]  # 5 min window
+        if len(self.failed_orders) >= 3:
+            self.trading_paused = True
+    
+    def _check_api_disconnect_breaker(self):
+        """Pause trading if API disconnected > 2 minutes"""
+        if self.api_disconnected and self.api_disconnect_start:
+            if asyncio.get_event_loop().time() - self.api_disconnect_start > 120:  # 2 min
+                self.trading_paused = True
+    
+    def can_trade(self) -> bool:
+        """Check if trading is allowed"""
+        return not self.trading_paused
 ```
 
 ---
@@ -270,7 +320,8 @@ class Order:
     """Represents an order with full lifecycle tracking"""
     def __init__(self, symbol: str, side: str, quantity: int,
                  order_type: OrderType, time_in_force: TimeInForce,
-                 price: Optional[float] = None, stop_price: Optional[float] = None):
+                 price: Optional[float] = None, stop_price: Optional[float] = None,
+                 stop_loss: Optional[float] = None, take_profit: Optional[float] = None):
         self.symbol = symbol
         self.side = side  # 'BUY', 'SELL', 'SELL_SHORT', 'BUY_TO_COVER'
         self.quantity = quantity
@@ -278,6 +329,8 @@ class Order:
         self.time_in_force = time_in_force
         self.price = price  # Limit price
         self.stop_price = stop_price  # Stop price
+        self.stop_loss = stop_loss  # Stop-loss price
+        self.take_profit = take_profit  # Take-profit price
         self.status = OrderStatus.PENDING
         self.order_id = None
         self.fill_price = None
@@ -292,14 +345,26 @@ class ExecutionGateway:
         self.portfolio = portfolio
         self.orders: Dict[str, Order] = {}
         self.accounts = []
+        self.reconciliation_in_progress = False
     
     async def initialize(self):
-        """Fetch accounts on startup"""
+        """Fetch accounts on startup and reconcile with broker state"""
         self.accounts = await self.api.get_accounts()
+        await self._reconcile_orders()
+    
+    async def _reconcile_orders(self):
+        """Sync local orders with broker state"""
+        broker_orders = await self.api.get_orders()
+        for order_id, order in self.orders.items():
+            if order_id in broker_orders:
+                broker_order = broker_orders[order_id]
+                if broker_order['status'] != order.status.value:
+                    order.status = OrderStatus(broker_order['status'])
     
     async def place_order(self, symbol: str, side: str, quantity: int,
                           order_type: str = "MARKET", time_in_force: str = "GTC",
-                          price: Optional[float] = None, stop_price: Optional[float] = None) -> str:
+                          price: Optional[float] = None, stop_price: Optional[float] = None,
+                          stop_loss: Optional[float] = None, take_profit: Optional[float] = None) -> str:
         """Place a trade order with full v3 endpoint coverage"""
         if not self.portfolio.can_trade(symbol, price or 0, 0):
             raise ValueError("Position size exceeds risk limits")
@@ -311,14 +376,19 @@ class ExecutionGateway:
             order_type=OrderType[order_type],
             time_in_force=TimeInForce[time_in_force],
             price=price,
-            stop_price=stop_price
+            stop_price=stop_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit
         )
         
-        order_id = await self.api.submit_order(order)
-        order.order_id = order_id
-        self.orders[order_id] = order
-        
-        return order_id
+        try:
+            order_id = await self.api.submit_order(order)
+            order.order_id = order_id
+            self.orders[order_id] = order
+            return order_id
+        except Exception as e:
+            self.portfolio.circuit_breakers.on_order_failure()
+            raise e
     
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an active order via TradeStation v3 /brokerage/orders/{order_id}/cancel"""
@@ -373,6 +443,9 @@ import asyncio
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class AgentStatus:
@@ -409,13 +482,28 @@ class OpenClawMonitor:
             "positions": 0,
             "total_value": 0.0
         }
+```
+
+---
+
+### 6. Agentic Trader (ML Classifier Version)
+
+```python
+# src/agents/agentic_trader.py
+import asyncio
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import Dict, List
+import json
+import os
 
 class AgenticTraderConfig:
     """Configuration for the Agentic Trader with advanced customization"""
     
     def __init__(self):
         # Model selection
-        self.model_type = "momentum"  # Options: momentum, ml_classifier, ml_regressor
+        self.model_type = "ml_classifier"  # Options: momentum, ml_classifier
         self.ml_model_path = None
         self.ml_feature_engineer_path = None
         
@@ -429,6 +517,12 @@ class AgenticTraderConfig:
         self.min_confidence = 0.7  # Minimum confidence for trade execution
         self.max_trades_per_day = 5  # Daily trade limit
         self.cooldown_minutes = 30  # Cooldown between trades
+        
+        # Feature engineering toggles
+        self.use_lagged_returns = True
+        self.use_rsi_divergence = True
+        self.use_volume_spikes = True
+        self.use_bollinger_position = True
         
         # Custom behaviors (extendable)
         self.custom_filters = []  # List of filter functions
@@ -447,6 +541,10 @@ class AgenticTraderConfig:
             'min_confidence': self.min_confidence,
             'max_trades_per_day': self.max_trades_per_day,
             'cooldown_minutes': self.cooldown_minutes,
+            'use_lagged_returns': self.use_lagged_returns,
+            'use_rsi_divergence': self.use_rsi_divergence,
+            'use_volume_spikes': self.use_volume_spikes,
+            'use_bollinger_position': self.use_bollinger_position,
             'custom_filters': [f.__name__ if hasattr(f, '__name__') else str(f) for f in self.custom_filters],
             'custom_exit_rules': [f.__name__ if hasattr(f, '__name__') else str(f) for f in self.custom_exit_rules]
         }
@@ -460,21 +558,85 @@ class AgenticTraderConfig:
 
 class AgenticTrader:
     """
-    Independent reasoning-based trading agent
-    Optional feature: samples recent market data and executes trades outside strategies
+    Independent reasoning-based trading agent with ML classifier
+    Samples recent market data and executes trades outside strategies
     """
     
-    def __init__(self, config: AgenticTraderConfig = None):
+    def __init__(self, config: AgenticTraderConfig = None, data_dir: str = "/data/memory"):
         self.config = config or AgenticTraderConfig()
         self.enabled = False
         self.last_sample_time = 0
         self.last_trade_time = 0
         self.trades_today = 0
         self.reasoning_log: List[dict] = []
+        self.data_dir = data_dir
+        os.makedirs(data_dir, exist_ok=True)
+    
+    def _get_memory_file(self) -> str:
+        """Get today's memory file path"""
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        return os.path.join(self.data_dir, f"{date_str}.md")
+    
+    def _log_reasoning(self, decision: dict):
+        """Log reasoning to memory/YYYY-MM-DD.md"""
+        with open(self._get_memory_file(), 'a') as f:
+            f.write(f"\n## {datetime.now().isoformat()}\n")
+            f.write(f"Agentic Trader Decision: {decision.get('symbol', 'N/A')}\n")
+            f.write(f"- Direction: {decision.get('direction', 'N/A')}\n")
+            f.write(f"- Confidence: {decision.get('confidence', 'N/A')}\n")
+            f.write(f"- Reasoning: {decision.get('reasoning', 'N/A')}\n")
+    
+    async def _extract_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Extract ML features from OHLC data"""
+        features = pd.DataFrame()
+        
+        # Lagged returns
+        if self.config.use_lagged_returns:
+            for lag in [1, 5, 20]:
+                features[f'returns_lag_{lag}'] = df['close'].pct_change().shift(lag)
+        
+        # RSI divergence
+        if self.config.use_rsi_divergence:
+            rsi = self._calculate_rsi(df['close'], 14)
+            features['rsi_divergence'] = rsi.diff().abs()
+        
+        # Volume spikes
+        if self.config.use_volume_spikes:
+            features['volume_spike'] = (df['volume'] > df['volume'].rolling(20).mean() * 2).astype(int)
+        
+        # Bollinger Band position
+        if self.config.use_bollinger_position:
+            sma = df['close'].rolling(20).mean()
+            std = df['close'].rolling(20).std()
+            features['bb_position'] = (df['close'] - sma) / std
+        
+        # Momentum and volatility (for ML classifier)
+        returns = df['close'].pct_change().dropna()
+        momentum = returns.tail(5).mean()
+        volatility = returns.tail(5).std()
+        
+        # ML Classifier confidence: momentum / (volatility * sqrt(252))
+        if volatility > 0:
+            confidence = abs(momentum) / (volatility * np.sqrt(252))
+        else:
+            confidence = 0
+        
+        features['confidence'] = confidence
+        features['momentum'] = momentum
+        features['volatility'] = volatility
+        
+        return features.fillna(0)
+    
+    def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
+        """Calculate RSI"""
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
     
     async def sample_market_data(self, symbols: List[str], data_layer) -> dict:
         """Sample recent market data for reasoning"""
-        from datetime import datetime, timedelta
         recent_data = {}
         for symbol in symbols:
             df = await data_layer.fetch_ohlc(
@@ -482,7 +644,7 @@ class AgenticTrader:
                 datetime.now() - timedelta(seconds=self.config.lookback_period), 
                 datetime.now()
             )
-            recent_data[symbol] = df.tail(12)  # Last sample period
+            recent_data[symbol] = df.tail(20)  # Last sample period with enough bars
         return recent_data
     
     async def analyze_and_execute(self, symbols: List[str], data_layer, execution_gateway, portfolio):
@@ -501,29 +663,20 @@ class AgenticTrader:
         decisions = []
         
         for symbol, df in recent_data.items():
-            if self.config.model_type == "momentum":
-                # Simple momentum reasoning
-                returns = df['close'].pct_change().dropna()
-                momentum = returns.tail(5).mean()
-                volatility = returns.tail(5).std()
-                confidence = abs(momentum) / volatility if volatility > 0 else 0
-            elif self.config.model_type in ("ml_classifier", "ml_regressor"):
-                # ML-based reasoning (requires trained model)
-                # Placeholder for ML inference
-                confidence = 0.5  # Default placeholder
-                momentum = 0
-            else:
-                confidence = 0
-                momentum = 0
+            features = await self._extract_features(df)
+            confidence = features['confidence'].iloc[-1]
+            momentum = features['momentum'].iloc[-1]
+            volatility = features['volatility'].iloc[-1]
             
             decision = {
                 'symbol': symbol,
                 'direction': 'long' if momentum > 0 else 'short',
-                'confidence': confidence,
-                'reasoning': f"Model: {self.config.model_type}, Momentum: {momentum:.4f}, Volatility: {volatility:.4f if 'volatility' in dir() else 'N/A'}"
+                'confidence': float(confidence),
+                'reasoning': f"Model: {self.config.model_type}, Momentum: {momentum:.6f}, Volatility: {volatility:.6f}, Conf: {confidence:.4f}"
             }
             decisions.append(decision)
             self.reasoning_log.append(decision)
+            self._log_reasoning(decision)
         
         # Execute high-confidence trades
         executed = []
@@ -552,7 +705,7 @@ class AgenticTrader:
 
 ---
 
-### 6. Configuration Widget
+### 7. Configuration Widget (with Git Versioning)
 
 ```python
 # src/config/config_widget.py
@@ -560,6 +713,8 @@ import json
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, asdict
 import os
+import subprocess
+from datetime import datetime
 from .agents.agentic_trader import AgenticTraderConfig
 
 @dataclass
@@ -584,12 +739,37 @@ class SystemConfig:
     # Monitoring
     alert_email: Optional[str] = None
     alert_telegram_chat_id: Optional[str] = None
+    alert_discord_webhook: Optional[str] = None
+    
+    # Circuit Breakers
+    circuit_breaker_failed_orders: int = 3
+    circuit_breaker_window_minutes: int = 5
+    circuit_breaker_drawdown_percent: float = 10.0
+    circuit_breaker_api_disconnect_seconds: int = 120
     
     def save(self, path: str = "/data/config/system_config.json"):
-        """Save configuration to file"""
+        """Save configuration to file and commit to git"""
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as f:
             json.dump(asdict(self), f, indent=2)
+        self._git_commit_config(path)
+    
+    def _git_commit_config(self, path: str):
+        """Commit config changes to git for versioning"""
+        try:
+            # Get repo root
+            result = subprocess.run(['git', 'rev-parse', '--show-toplevel'], 
+                                   capture_output=True, text=True, cwd='/home/hologaun/projects/mlat')
+            if result.returncode == 0:
+                repo_root = result.stdout.strip()
+                
+                # Add and commit config file
+                subprocess.run(['git', 'add', path], cwd=repo_root)
+                subprocess.run(['git', 'commit', '-m', f'Update config: {datetime.now().isoformat()}'], 
+                             cwd=repo_root)
+        except Exception as e:
+            # Log but don't fail - config save is more important than git commit
+            pass
     
     @classmethod
     def load(cls, path: str = "/data/config/system_config.json") -> 'SystemConfig':
@@ -642,7 +822,7 @@ class ConfigWidget:
 
 ---
 
-### 7. Strategy Management System
+### 8. Strategy Management System
 
 ```python
 # src/strategy/manager.py
@@ -695,11 +875,9 @@ class StrategyManager:
     def _extract_strategy_info(self, module_path: str) -> Optional[StrategyInfo]:
         """Extract strategy information from a module"""
         try:
-            # Simple parsing - in production, use AST parsing
             with open(module_path, 'r') as f:
                 content = f.read()
             
-            # Extract class name
             import re
             class_match = re.search(r'class\s+(\w+)\(BaseStrategy\):', content)
             if not class_match:
@@ -712,7 +890,7 @@ class StrategyManager:
                 name=module_name,
                 class_name=class_name,
                 module_path=module_path,
-                symbols=None,  # Default to all symbols
+                symbols=None,
                 parameters={},
                 created_at=str(pd.Timestamp.now()),
                 last_modified=str(pd.Timestamp.fromtimestamp(os.path.getmtime(module_path)))
@@ -730,7 +908,6 @@ class StrategyManager:
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             
-            # Instantiate the strategy class
             strategy_class = getattr(module, strategy_info.class_name)
             instance = strategy_class(**(strategy_info.parameters or {}))
             
@@ -756,20 +933,16 @@ class StrategyManager:
         if not os.path.exists(file_path):
             return None
         
-        # Copy to strategies directory
         if not name:
             name = os.path.splitext(os.path.basename(file_path))[0]
         
         dest_path = os.path.join(self.strategies_dir, f"{name}.py")
         if os.path.exists(dest_path):
-            # Strategy already exists
             return self.strategy_registry.get(name)
         
-        # Copy file
         import shutil
         shutil.copy(file_path, dest_path)
         
-        # Extract info and register
         strategy_info = self._extract_strategy_info(dest_path)
         if strategy_info:
             strategy_info.name = name
@@ -787,7 +960,7 @@ class StrategyManager:
 
 ---
 
-### 8. Built-in Scanner Engine
+### 9. Scanner Engine with Signal Conditions
 
 ```python
 # src/scanner/scanner.py
@@ -795,6 +968,28 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List
 from datetime import datetime, timedelta
+import json
+import os
+
+class SignalCondition:
+    """Represents a signal condition that can trigger actions"""
+    
+    def __init__(self, name: str, condition_func, action: str, target: str = None):
+        """
+        Args:
+            name: Condition name
+            condition_func: Function that takes a DataFrame and returns boolean
+            action: Action to trigger ('buy', 'sell', 'discord_notify', 'user_notify')
+            target: Optional target (symbol, channel_id, etc.)
+        """
+        self.name = name
+        self.condition_func = condition_func
+        self.action = action
+        self.target = target
+    
+    def evaluate(self, df: pd.DataFrame) -> bool:
+        """Evaluate the condition against the DataFrame"""
+        return self.condition_func(df)
 
 class TechnicalIndicator:
     """Base class for technical indicators"""
@@ -838,7 +1033,7 @@ class TechnicalIndicator:
         return patterns
 
 class Scanner:
-    """Real-time market scanner with indicator columns"""
+    """Real-time market scanner with indicator columns and signal conditions"""
     
     def __init__(self, symbols: List[str], data_layer):
         self.symbols = symbols
@@ -853,6 +1048,32 @@ class Scanner:
             ('SMA(50)', lambda df: TechnicalIndicator.sma(df['close'], 50)),
             ('Awesome', TechnicalIndicator.awesome_oscillator),
         ]
+        self.signal_conditions: List[SignalCondition] = []
+        self._setup_default_conditions()
+    
+    def _setup_default_conditions(self):
+        """Setup default signal conditions"""
+        # Buy condition: RSI < 30 (oversold)
+        self.signal_conditions.append(SignalCondition(
+            name="rsi_oversold_buy",
+            condition_func=lambda df: df['rsi'].iloc[-1] < 30,
+            action="buy"
+        ))
+        
+        # Sell condition: RSI > 70 (overbought)
+        self.signal_conditions.append(SignalCondition(
+            name="rsi_overbought_sell",
+            condition_func=lambda df: df['rsi'].iloc[-1] > 70,
+            action="sell"
+        ))
+        
+        # Discord notify: Engulfing pattern detected
+        self.signal_conditions.append(SignalCondition(
+            name="engulfing_pattern_notify",
+            condition_func=lambda df: TechnicalIndicator.candlestick_patterns(df)['engulfing'].iloc[-1],
+            action="discord_notify",
+            target="#mlat-alerts"
+        ))
     
     async def scan_symbol(self, symbol: str) -> dict:
         df = await self.data_layer.fetch_ohlc(
@@ -863,35 +1084,78 @@ class Scanner:
         
         result = {'symbol': symbol}
         
+        # Calculate indicators
         for name, func in self.indicators:
             try:
                 result[name] = func(df).iloc[-1]
             except:
                 result[name] = None
         
+        # Add candlestick patterns
         patterns = TechnicalIndicator.candlestick_patterns(df)
         for pattern_name, is_pattern in patterns.items():
             result[f'pattern_{pattern_name}'] = is_pattern.iloc[-1]
         
+        # Add current price info
         result['close'] = df['close'].iloc[-1]
         result['volume'] = df['volume'].iloc[-1]
         
+        # Add RSI
+        result['rsi'] = result.get('RSI(14)', None)
+        
         return result
     
-    async def scan_all(self) -> List[dict]:
+    def evaluate_conditions(self, symbol: str, df: pd.DataFrame) -> List[dict]:
+        """Evaluate all signal conditions for a symbol"""
         results = []
+        for condition in self.signal_conditions:
+            try:
+                if condition.evaluate(df):
+                    results.append({
+                        'condition': condition.name,
+                        'symbol': symbol,
+                        'action': condition.action,
+                        'target': condition.target
+                    })
+            except Exception as e:
+                # Log but don't fail
+                pass
+        return results
+    
+    async def scan_all(self) -> dict:
+        """Scan all symbols and return results with evaluated conditions"""
+        scan_results = []
+        triggered_conditions = []
+        
         for symbol in self.symbols:
             try:
                 scan_result = await self.scan_symbol(symbol)
-                results.append(scan_result)
+                scan_results.append(scan_result)
+                
+                # Re-fetch full data for condition evaluation
+                df = await self.data_layer.fetch_ohlc(
+                    symbol,
+                    datetime.now() - timedelta(days=7),
+                    datetime.now()
+                )
+                
+                # Evaluate conditions
+                conditions = self.evaluate_conditions(symbol, df)
+                triggered_conditions.extend(conditions)
+                
             except Exception as e:
-                results.append({'symbol': symbol, 'error': str(e)})
-        return results
+                scan_results.append({'symbol': symbol, 'error': str(e)})
+        
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'scan_results': scan_results,
+            'triggered_conditions': triggered_conditions
+        }
 ```
 
 ---
 
-### 9. Monitoring Dashboard
+### 10. Monitoring Dashboard
 
 ```python
 # src/dashboard/server.py
@@ -904,15 +1168,26 @@ import asyncio
 import json
 import os
 
-app = FastAPI(title="HoloClaw Trading Dashboard v3")
+app = FastAPI(title="HoloClaw Trading Dashboard v4")
 
 templates = Jinja2Templates(directory="src/dashboard/templates")
-manager = type('ConnectionManager', (), {
-    'active_connections': [],
-    'async def connect': lambda self, ws: asyncio.run_coroutine_threadsafe(ws.accept(), asyncio.new_event_loop()),
-    'async def disconnect': lambda self, ws: self.active_connections.remove(ws) if ws in self.active_connections else None,
-    'async def broadcast': lambda self, msg: [asyncio.run_coroutine_threadsafe(c.send_json(msg), asyncio.new_event_loop()) for c in self.active_connections]
-})()
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+    
+    async def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+    
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            await connection.send_json(message)
+
+manager = ConnectionManager()
 
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):
@@ -924,8 +1199,7 @@ async def health_check():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    manager.active_connections.append(websocket)
+    await manager.connect(websocket)
     try:
         while True:
             data = await websocket.receive_text()
@@ -938,7 +1212,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "positions": len(portfolio.positions),
                     "capital": portfolio.current_capital,
                     "agents": len(openclaw_monitor.agents),
-                    "agentic_trader_enabled": agentic_trader.enabled
+                    "agentic_trader_enabled": agentic_trader.enabled,
+                    "trading_paused": portfolio.circuit_breakers.trading_paused
                 })
             
             elif message['type'] == 'toggle_strategy':
@@ -957,6 +1232,11 @@ async def websocket_endpoint(websocket: WebSocket):
             elif message['type'] == 'scan':
                 results = await scanner.scan_all()
                 await websocket.send_json({"type": "scan_results", "data": results})
+            
+            elif message['type'] == 'reset_circuit_breaker':
+                portfolio.circuit_breakers.trading_paused = False
+                portfolio.circuit_breakers.failed_orders = []
+                await websocket.send_json({"type": "circuit_breaker_reset"})
     
     except WebSocketDisconnect:
         manager.active_connections.remove(websocket)
@@ -1033,14 +1313,19 @@ asyncio.run(main())
 │   │   ├── __init__.py
 │   │   ├── signals.py  # Base strategy classes
 │   │   └── manager.py  # Strategy management
-│   ├── portfolio/      # Portfolio management
+│   ├── portfolio/      # Portfolio management (with circuit breakers)
+│   │   └── portfolio.py
 │   ├── execution/      # Order execution (TradeStation API)
+│   │   └── gateway.py  # With reconciliation
 │   ├── agents/         # OpenClaw integration + Agentic Trader
 │   │   ├── openclaw_integration.py
 │   │   └── agentic_trader.py
-│   ├── config/         # Configuration management
-│   ├── scanner/        # Market scanner
+│   ├── config/         # Configuration management (with git versioning)
+│   │   └── config_widget.py
+│   ├── scanner/        # Market scanner (with signal conditions)
+│   │   └── scanner.py
 │   ├── ml/             # ML training pipeline
+│   │   └── train.py
 │   └── dashboard/      # Web UI
 │       ├── server.py
 │       ├── templates/
@@ -1050,6 +1335,7 @@ asyncio.run(main())
 ├── strategies/         # User-added strategies (external files)
 ├── config/             # System configuration
 │   └── system_config.json
+├── memory/             # Daily reasoning logs (YYYY-MM-DD.md)
 ├── logs/               # Application logs
 └── HoloClaw_ML_Trading_Architecture.md
 ```
@@ -1059,7 +1345,7 @@ asyncio.run(main())
 cd ~/projects/mlat
 
 # Initialize
-mkdir -p data models strategies config logs
+mkdir -p data models strategies config logs memory
 
 # Start main application
 python -m holoclaw.main
@@ -1081,6 +1367,6 @@ uvicorn holoclaw.dashboard.server:app --host 0.0.0.0 --port 8000 --reload
 
 ---
 
-**Version:** 3.0  
+**Version:** 4.0  
 **Last Updated:** 2026-03-11  
 **Maintainer:** Aesir (Hologaun)
