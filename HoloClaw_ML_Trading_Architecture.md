@@ -14,6 +14,7 @@ A scalable, production-grade system for multiple algorithmic/ML strategies runni
 ### Core Capabilities (v5)
 - **YAML-Configured Strategies** — No-code strategy configuration via YAML files, OpenClaw-driven generation
 - **OpenClaw Generation Workflow** — Bi-directional conversion: SQX ↔ YAML ↔ TradeStation
+- **Backtesting First** — All YAML strategies validated on TradeStation via EL code before production
 - **Enhanced Safety Rails** — Multi-layer circuit breakers, drawdown controls, order reconciliation
 - **ML-Enhanced Agentic Trader** — Classifier confidence, pattern recognition, anomaly detection
 - **Production Hardening** — Structured JSON logging, Prometheus metrics, Discord/Telegram alerting, config versioning
@@ -197,7 +198,7 @@ OpenClaw Agent (YAML → Tradestation)
         ↓
 Tradestation EasyLanguage (.el)
         ↓
-Tradestation Backtesting
+**TradeStation Backtesting (Validation Phase)** ← **MUST PASS BEFORE PRODUCTION**
         ↓
 YAML Update (with backtest results)
 ```
@@ -225,6 +226,24 @@ SQX Backtesting
         ↓
 YAML Update (with backtest results)
 ```
+
+---
+
+## Production Readiness Checklist
+
+**All YAML-based strategies must pass the following before going live:**
+
+| Check | Description |
+|-------|-------------|
+| ✅ TradeStation Backtesting | Strategy validated on TradeStation with EL code |
+| ✅ Walk-Forward Analysis | Out-of-sample performance verified |
+| ✅ Drawdown Control | Maximum drawdown within acceptable limits |
+| ✅ Profit Factor > 1.5 | Strategy shows consistent profitability |
+| ✅ Win Rate Validation | Win rate meets or exceeds expectations |
+| ✅ Risk/Reward Ratio | Favorable reward compared to risk |
+| ✅ Circuit Breaker Test | Safety rails tested with sample scenarios |
+
+**Note:** YAML strategies are generated and validated on TradeStation via EL code **before** any live trading. Production deployment requires documented backtest results.
 
 ---
 
@@ -1919,6 +1938,9 @@ asyncio.run(main())
 │   ├── strategy_2.py       # Python-based strategy
 │   ├── strategy_3.yaml     # YAML-based strategy
 │   └── strategy_4.el       # TradeStation EasyLanguage strategy
+├── backtests/              # **NEW** - Backtest results for YAML strategies (pre-production validation)
+│   ├── strategy_1_2026-03-11.json  # TradeStation backtest results
+│   └── strategy_3_2026-03-11.json
 ├── config/                 # System configuration
 │   └── system_config.json
 ├── memory/                 # Daily reasoning logs (YYYY-MM-DD.md)
@@ -1931,7 +1953,7 @@ asyncio.run(main())
 cd ~/projects/mlat
 
 # Initialize
-mkdir -p data models strategies config logs memory
+mkdir -p data models strategies config logs memory backtests
 
 # Start main application
 python -m holoclaw.main
